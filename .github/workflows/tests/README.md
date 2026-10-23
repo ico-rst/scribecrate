@@ -49,7 +49,7 @@ dependency-free unit suite. No extreme thread-count boundary is allocated.
 
 `check_diarization.py` uses the real installed bindings and the public two-speaker
 fixture below. Supply `--api`, `--audio`, `--cache` and `--output` in disposable
-scratch space. It may download the unchanged Whisper and ONNX models. It checks
+scratch space. It may download the Whisper and ONNX models. It checks
 both actual native config arguments, nonempty native diarization turns, speech
 segments/speaker labels, text/SRT/VTT output, and overlapping batch diarization
 with a separate SSE request. SSE must complete without speaker fields. It does

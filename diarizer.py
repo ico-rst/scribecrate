@@ -30,14 +30,20 @@ _SEG_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 )
+# WeSpeaker ResNet34-LM trained on VoxCeleb (speakers of many languages and
+# nationalities, including English and German), the same speaker embedding as
+# pyannote's speaker-diarization-3.1 pipeline. The "en" in the file name refers
+# to the dataset, not a single-language restriction.
 _EMB_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speaker-recongition-models/"
-    "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+    "wespeaker_en_voxceleb_resnet34_LM.onnx"
 )
 
 _SEG_MODEL_REL = "sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
-_EMB_MODEL_REL = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+_EMB_MODEL_REL = "wespeaker_en_voxceleb_resnet34_LM.onnx"
+
+_PROVIDERS = ("cpu", "cuda")
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -79,14 +85,21 @@ def load(
     num_speakers: int = -1,
     cluster_threshold: float = 0.5,
     num_threads: int = 1,
+    provider: str = "cpu",
 ) -> None:
-    """Download ONNX models if needed, initialize the diarization pipeline."""
+    """Download ONNX models if needed, initialize the diarization pipeline.
+
+    provider selects the ONNX Runtime execution provider for both models:
+    "cpu", or "cuda" (requires the CUDA build of sherpa-onnx in the :cuda image).
+    """
     global _sd
 
     # Reject invalid direct calls before downloads or native initialization.
     # bool is an int subclass, but is not a meaningful thread configuration.
     if type(num_threads) is not int or not 1 <= num_threads <= 2147483647:
         raise ValueError("num_threads must be an integer from 1 to 2147483647.")
+    if provider not in _PROVIDERS:
+        raise ValueError("provider must be one of: " + ", ".join(_PROVIDERS) + ".")
 
     seg_path, emb_path = _ensure_models(cache_dir)
 
@@ -96,12 +109,13 @@ def load(
     config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
         segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             num_threads=num_threads,
+            provider=provider,
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=seg_path,
             ),
         ),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=emb_path, num_threads=num_threads,
+            model=emb_path, num_threads=num_threads, provider=provider,
         ),
         clustering=sherpa_onnx.FastClusteringConfig(
             num_clusters=num_clusters,
@@ -118,11 +132,12 @@ def load(
 
     _sd = sherpa_onnx.OfflineSpeakerDiarization(config)
     logger.info(
-        "Diarization pipeline ready (sample_rate=%d, num_clusters=%d, threshold=%.2f, num_threads=%d per model)",
+        "Diarization pipeline ready (sample_rate=%d, num_clusters=%d, threshold=%.2f, num_threads=%d per model, provider=%s)",
         _sd.sample_rate,
         num_clusters,
         cluster_threshold,
         num_threads,
+        provider,
     )
 
 

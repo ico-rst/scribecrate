@@ -107,15 +107,23 @@ def _load_diarizer() -> None:
         cache_dir = os.environ.get("HF_HOME", "/var/lib/whisper")
         num_speakers = _env_int("WHISPER_DIARIZE_NUM_SPEAKERS", -1)
         threshold = _env_float("WHISPER_DIARIZE_THRESHOLD", 0.5)
+        # Diarize on the same device as Whisper. run.sh resolves
+        # WHISPER_DEVICE=auto to cpu or cuda before the server starts.
+        device = os.environ.get("WHISPER_DEVICE", "cpu").strip().lower()
+        provider = "cuda" if device == "cuda" else "cpu"
         logger.info("Loading diarization pipeline...")
         diarizer.load(
             cache_dir=cache_dir,
             num_speakers=num_speakers,
             cluster_threshold=threshold,
             num_threads=_diarize_threads,
+            provider=provider,
         )
         _diarization_enabled = True
-        logger.info("Diarization enabled (num_threads=%d per model).", _diarize_threads)
+        logger.info(
+            "Diarization enabled (num_threads=%d per model) on %s.",
+            _diarize_threads, provider,
+        )
     except Exception as exc:
         logger.warning("Failed to load diarizer (diarization disabled): %s", exc)
         _diarization_enabled = False

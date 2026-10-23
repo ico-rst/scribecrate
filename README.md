@@ -200,7 +200,7 @@ This Docker image uses the following variables, that can be declared in an `env`
 | `WHISPER_MAX_UPLOAD_MB` | Maximum uploaded audio file size in MB. Requests above this limit return HTTP 413. Set to `0` to disable the limit. | `1024` |
 | `WHISPER_LOCAL_ONLY` | When set to any non-empty value (e.g. `true`), disables all HuggingFace model downloads. For offline or air-gapped deployments with pre-cached models. | *(not set)* |
 | `WHISPER_WORD_TIMESTAMPS` | When set to `true`, enables word-level timestamps globally for all requests. The `verbose_json` output will include a top-level `words` array with per-word timing and confidence. Can also be enabled per-request via `timestamp_granularities[]=word`. | *(not set)* |
-| `WHISPER_DIARIZATION` | Set to `true` to enable speaker diarization. Identifies who is speaking in each segment. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with pyannote segmentation-3.0 ONNX models (~45 MB, auto-downloaded on first use). Not supported in streaming mode. | *(not set)* |
+| `WHISPER_DIARIZATION` | Set to `true` to enable speaker diarization. Identifies who is speaking in each segment. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with pyannote segmentation-3.0 and a multilingual VoxCeleb speaker embedding model (~32 MB of ONNX models, auto-downloaded on first use). Runs on the GPU when `WHISPER_DEVICE` resolves to `cuda` in the `:cuda` image. Not supported in streaming mode. | *(not set)* |
 | `WHISPER_DIARIZE_NUM_SPEAKERS` | Exact number of speakers (if known). Improves clustering accuracy. Set to `-1` or leave unset for auto-detection. | `-1` |
 | `WHISPER_DIARIZE_THREADS` | CPU threads per segmentation/embedding model. Canonical decimal integer `1` through `2147483647`; unset/empty inherits `WHISPER_THREADS`. | `WHISPER_THREADS` |
 | `WHISPER_DIARIZE_THRESHOLD` | Clustering threshold for auto-detection. Lower = more speakers detected, higher = fewer. Ignored when exact speaker count is set. | `0.5` |
@@ -704,7 +704,7 @@ For full and lightweight Docker Compose stacks, manual `docker run` examples, an
 
 ## Speaker diarization
 
-Speaker diarization identifies *who* is speaking in each transcribed segment. It is a local extension powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) using the pyannote segmentation-3.0 model exported to ONNX format.
+Speaker diarization identifies *who* is speaking in each transcribed segment. It is a local extension powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) using the pyannote segmentation-3.0 model and the WeSpeaker ResNet34-LM speaker embedding model, both exported to ONNX format. The embedding model is trained on VoxCeleb, which covers speakers of many languages including English and German, and is the same embedding used by pyannote's speaker-diarization-3.1 pipeline.
 
 **Enable diarization:**
 
@@ -713,7 +713,7 @@ Speaker diarization identifies *who* is speaking in each transcribed segment. It
 WHISPER_DIARIZATION=true
 ```
 
-ONNX models (~45 MB total) are automatically downloaded on first use and cached in the `/var/lib/whisper` volume. To pre-download them:
+ONNX models (~32 MB total) are automatically downloaded on first use and cached in the `/var/lib/whisper` volume. To pre-download them:
 
 ```bash
 docker exec whisper whisper_manage --downloaddiarize
@@ -758,12 +758,15 @@ docker exec whisper whisper_manage --downloaddiarize
 
 - Set `WHISPER_DIARIZE_NUM_SPEAKERS` if you know the exact number of speakers for better accuracy.
 - The diarization pipeline runs after transcription. Processing time depends on audio duration, hardware and thread settings, and can exceed transcription time.
+- Earlier versions used a Mandarin-trained embedding model (`3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx`). After updating, the new model is downloaded on the next start; pre-download it for offline deployments. The old file can be deleted from the volume.
+
+**GPU diarization:** With the `:cuda` image and `WHISPER_DEVICE=cuda` (or `auto` when a GPU is detected), the segmentation and embedding models run on the GPU through ONNX Runtime's CUDA execution provider. Audio decoding, feature extraction and clustering stay on the CPU. With `WHISPER_DEVICE=cpu`, diarization runs on the CPU. The standard image's sherpa-onnx build is CPU-only.
 
 **Diarization threads:** Both the segmentation and embedding models now inherit `WHISPER_THREADS` (normally `2`) instead of using one thread each. This changes CPU resource use for existing diarization-enabled deployments. Set `WHISPER_DIARIZE_THREADS=1` to retain the previous per-model thread setting, or choose another count for your CPU budget. Removing or emptying the option restores inheritance, not the previous one-thread default.
 
 `WHISPER_DIARIZE_THREADS` accepts surrounding ASCII whitespace and at most one matching pair of outer quotes, like the repetition controls. Use ASCII decimal digits from `1` through `2147483647`, without signs or leading zeros. Invalid nonempty values stop startup before model loading, even when diarization is disabled. This option alone does not enable diarization.
 
-This is not a process-wide thread limit. Other libraries and request workers can use additional threads, and more threads do not guarantee a speedup or identical output. Diarization remains CPU-based even with the `:cuda` image, and remains batch-only. Apply changes using the [environment-variable restart/recreation guidance](#environment-variables); keep model volumes when updating or rolling back.
+This is not a process-wide thread limit. Other libraries and request workers can use additional threads, and more threads do not guarantee a speedup or identical output. On the GPU, these threads only cover CPU-side work. Diarization remains batch-only. Apply changes using the [environment-variable restart/recreation guidance](#environment-variables); keep model volumes when updating or rolling back.
 
 ## Usage counts
 

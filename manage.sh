@@ -340,13 +340,13 @@ do_download_diarize() {
   echo
   echo "Downloading diarization ONNX models to /var/lib/whisper..."
   echo "  - Segmentation model (~5 MB)"
-  echo "  - Speaker embedding model (~40 MB)"
+  echo "  - Speaker embedding model (~27 MB)"
   echo
 
   local cache_dir="/var/lib/whisper"
   local seg_dir="${cache_dir}/sherpa-onnx-pyannote-segmentation-3-0"
   local seg_model="${seg_dir}/model.onnx"
-  local emb_model="${cache_dir}/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+  local emb_model="${cache_dir}/wespeaker_en_voxceleb_resnet34_LM.onnx"
 
   if [ ! -f "$seg_model" ]; then
     echo "  Downloading segmentation model..."
@@ -362,7 +362,7 @@ do_download_diarize() {
   if [ ! -f "$emb_model" ]; then
     echo "  Downloading embedding model..."
     curl -fSL --retry 3 --retry-delay 2 -o "$emb_model" \
-      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx"
     echo "  Embedding model ready."
   else
     echo "  Embedding model already exists."

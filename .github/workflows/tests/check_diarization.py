@@ -121,6 +121,7 @@ def check(args):
         config = native.call_args.args[0]
         assert config.segmentation.num_threads == api._diarize_threads
         assert config.embedding.num_threads == api._diarize_threads
+        assert config.segmentation.provider == config.embedding.provider == "cpu"
         assert diarizer.diarize(str(args.audio)), "Warm-up returned no native diarization turns"
         timings, cpu_seconds, all_turns = [], [], []
         for _ in range(args.runs):

@@ -64,7 +64,7 @@ jobs:
           # Verify the CUDA image can boot on a non-GPU runner in explicit CPU mode.
           docker logs whisper-cuda-runtime-test 2>&1 | grep -Eq 'Device:[[:space:]]+cpu'
           docker logs whisper-cuda-runtime-test 2>&1 | grep -q 'condition_on_previous_text=False no_repeat_ngram_size=3'
-          docker logs whisper-cuda-runtime-test 2>&1 | grep 'Diarization enabled (num_threads=1 per model)' >/dev/null
+          docker logs whisper-cuda-runtime-test 2>&1 | grep 'Diarization enabled (num_threads=1 per model) on cpu.' >/dev/null
 
           # Verify health, auth enforcement, and the OpenAI-compatible models endpoint.
           docker exec whisper-cuda-runtime-test curl -sf http://127.0.0.1:9000/health

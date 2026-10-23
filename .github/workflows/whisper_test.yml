@@ -338,7 +338,7 @@ jobs:
               -F "file=@$RUNNER_TEMP/whisper-diarization.wav" -F model=whisper-1 -F response_format=verbose_json)
             printf '%s' "$diarize_output" | python3 -c \
               'import sys,json; d=json.load(sys.stdin); assert d["text"].strip() and d["segments"]; assert all(s.get("speaker", "").startswith("SPEAKER_") for s in d["segments"])'
-            docker logs "$TEST_ID" 2>&1 | grep 'Diarization enabled (num_threads=2 per model)' >/dev/null
+            docker logs "$TEST_ID" 2>&1 | grep 'Diarization enabled (num_threads=2 per model) on cpu.' >/dev/null
             docker cp .github/workflows/tests/check_diarization.py "$TEST_ID:/tmp/check_diarization.py"
             timeout 900 docker exec "$TEST_ID" python3 /tmp/check_diarization.py \
               --api /opt/src/api_server.py --audio /tmp/test_diarize.wav \

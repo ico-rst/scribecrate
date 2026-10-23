@@ -30,6 +30,7 @@ class DiarizationOptionTests(unittest.TestCase):
             mock.patch.dict(os.environ, {
                 OPTION: "", "WHISPER_THREADS": "", "WHISPER_DIARIZATION": "true",
                 "WHISPER_CONDITION_ON_PREVIOUS_TEXT": "", "WHISPER_NO_REPEAT_NGRAM_SIZE": "",
+                "WHISPER_DEVICE": "",
             }),
             mock.patch.object(api_server, "_diarize_threads", 2),
             mock.patch.object(api_server, "_diarization_enabled", False),
@@ -117,13 +118,29 @@ class DiarizationOptionTests(unittest.TestCase):
             with self.assertLogs(api_server.logger, level="INFO") as logs:
                 api_server._load_diarizer()
             fake.load.assert_called_once_with(cache_dir="/fixture/cache", num_speakers=2,
-                                              cluster_threshold=0.7, num_threads=6)
+                                              cluster_threshold=0.7, num_threads=6, provider="cpu")
             self.assertIn("num_threads=6", " ".join(logs.output))
             self.assertTrue(api_server._diarization_enabled)
             fake.load.side_effect = RuntimeError("fixture native load failure")
             with self.assertLogs(api_server.logger, level="WARNING"):
                 api_server._load_diarizer()
             self.assertFalse(api_server._diarization_enabled)
+
+    def test_provider_follows_whisper_device(self):
+        fake = types.ModuleType("diarizer")
+        fake.load = mock.Mock()
+        cases = [("", "cpu"), ("cpu", "cpu"), ("auto", "cpu"), ("cuda", "cuda"), (" CUDA ", "cuda")]
+        with mock.patch.dict(sys.modules, {"diarizer": fake}):
+            for device, expected in cases:
+                with self.subTest(device=device):
+                    os.environ["WHISPER_DEVICE"] = device
+                    with self.assertLogs(api_server.logger, level="INFO") as logs:
+                        api_server._load_diarizer()
+                    self.assertEqual(fake.load.call_args.kwargs["provider"], expected)
+                    self.assertIn("on " + expected, " ".join(logs.output))
+            os.environ.pop("WHISPER_DEVICE")
+            api_server._load_diarizer()
+            self.assertEqual(fake.load.call_args.kwargs["provider"], "cpu")
 
     def test_disabled_diarization_has_no_optional_imports(self):
         original = __import__
@@ -171,7 +188,9 @@ class DiarizerConstructionTests(unittest.TestCase):
         for threads in (1, 2, 6, 2147483647):
             self.diarizer.load("/cache", 2, 0.7, num_threads=threads)
             self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["num_threads"], threads)
-            self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=threads)
+            self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["provider"], "cpu")
+            self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=threads,
+                                                                          provider="cpu")
             self.native.FastClusteringConfig.assert_called_with(num_clusters=2, threshold=0.7)
             args = self.native.OfflineSpeakerDiarizationConfig.call_args.kwargs
             self.assertEqual((args["min_duration_on"], args["min_duration_off"]), (0.3, 0.5))
@@ -187,6 +206,17 @@ class DiarizerConstructionTests(unittest.TestCase):
                     self.diarizer.load(num_threads=value)
         self.models.assert_not_called()
         self.native.OfflineSpeakerDiarizationConfig.assert_not_called()
+
+    def test_both_models_receive_provider(self):
+        self.diarizer.load("/cache", 2, 0.7, 2, "cuda")
+        self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["provider"], "cuda")
+        self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=2,
+                                                                      provider="cuda")
+        for value in ("gpu", "CUDA", "", None, "tensorrt"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "provider"):
+                    self.diarizer.load(num_threads=2, provider=value)
+        self.models.assert_called_once()
 
     def test_invalid_native_config_does_not_initialize_pipeline(self):
         self.config.validate.return_value = False

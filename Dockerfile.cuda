@@ -15,9 +15,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # faster-whisper decodes audio via the PyAV library (bundled FFmpeg libraries).
 # PyAV 19 removed metadata_errors, which faster-whisper's decoder still uses.
 # curl is used by run.sh for the public-IP lookup and the health-check poll.
+# sherpa-onnx needs its CUDA build to run diarization on the GPU. That build is
+# not on PyPI, so --uploaded-prior-to cannot apply; pin the CUDA 12 / cuDNN 9
+# wheel matching the base image by URL and SHA-256 instead. Its native module
+# links against ALSA (libasound2t64), although diarization does no audio I/O.
 RUN set -x \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl bzip2 python3 python3-venv \
+    && apt-get install -y --no-install-recommends ca-certificates curl bzip2 python3 python3-venv libasound2t64 \
     && python3 -m venv /opt/venv \
     && pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --uploaded-prior-to P7D \
@@ -26,7 +30,8 @@ RUN set -x \
          fastapi \
          "uvicorn[standard]" \
          python-multipart \
-         sherpa-onnx \
+    && pip install --no-cache-dir \
+         "sherpa-onnx @ https://huggingface.co/csukuangfj2/sherpa-onnx-wheels/resolve/main/cuda/1.13.8/sherpa_onnx-1.13.8%2Bcuda12.cudnn9.onnxruntime1.28.2-cp312-cp312-linux_x86_64.whl#sha256=5dc95055b512babadd9798a5efcdd0a29e3d17d6a41e668198c02667a541779c" \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && find /opt/venv -name '*.pyi' -delete \

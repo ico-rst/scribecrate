@@ -200,7 +200,7 @@ CPU 映像支援 `linux/amd64` 和 `linux/arm64`。`:cuda` 標籤僅支援 `linu
 | `WHISPER_MAX_UPLOAD_MB` | 上傳音訊檔案的最大大小（MB）。超過此限制的請求會返回 HTTP 413。設為 `0` 可停用此限制。 | `1024` |
 | `WHISPER_LOCAL_ONLY` | 設為任意非空值（如 `true`）時，停用所有 HuggingFace 模型下載。適用於預先快取模型的離線或隔離網路部署。 | *（未設定）* |
 | `WHISPER_WORD_TIMESTAMPS` | 設為 `true` 時，全域啟用詞級時間戳。`verbose_json` 輸出將包含頂層 `words` 陣列，含每個詞的起止時間和置信度。也可透過 `timestamp_granularities[]=word` 按請求啟用。 | *（未設定）* |
-| `WHISPER_DIARIZATION` | 設為 `true` 啟用說話人分離，識別每個片段中的說話人。使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 和 pyannote segmentation-3.0 ONNX 模型（約 45 MB，首次使用時自動下載）。不支援串流模式。 | *（未設定）* |
+| `WHISPER_DIARIZATION` | 設為 `true` 啟用說話人分離，識別每個片段中的說話人。使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)、pyannote segmentation-3.0 和多語言 VoxCeleb 說話人嵌入模型（ONNX 模型共約 32 MB，首次使用時自動下載）。在 `:cuda` 映像中，當 `WHISPER_DEVICE` 為 `cuda` 時在 GPU 上執行。不支援串流模式。 | *（未設定）* |
 | `WHISPER_DIARIZE_NUM_SPEAKERS` | 說話人確切數量（如已知）。提高聚類準確性。設為 `-1` 或留空表示自動偵測。 | `-1` |
 | `WHISPER_DIARIZE_THREADS` | 分割和嵌入模型各自使用的 CPU 執行緒數。接受 `1` 至 `2147483647` 的標準十進位整數；未設定或為空時繼承 `WHISPER_THREADS`。 | `WHISPER_THREADS` |
 | `WHISPER_DIARIZE_THRESHOLD` | 自動偵測時使用的聚類閾值。值越小偵測到的說話人越多，值越大偵測到的越少。設定確切說話人數量時會忽略此項。 | `0.5` |
@@ -704,7 +704,7 @@ ScribeCrate 可作為更廣泛的自託管 AI 設定中的語音轉文字服務�
 
 ## 說話人分離
 
-說話人分離功能識別每個轉錄片段中*誰在說話*。這是一個本地擴充，基於 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 使用匯出為 ONNX 格式的 pyannote segmentation-3.0 模型。
+說話人分離功能識別每個轉錄片段中*誰在說話*。這是一個本地擴充，基於 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 使用匯出為 ONNX 格式的 pyannote segmentation-3.0 模型和 WeSpeaker ResNet34-LM 說話人嵌入模型（以多語言 VoxCeleb 資料集訓練）。
 
 **啟用說話人分離：**
 
@@ -713,7 +713,7 @@ ScribeCrate 可作為更廣泛的自託管 AI 設定中的語音轉文字服務�
 WHISPER_DIARIZATION=true
 ```
 
-ONNX 模型（共約 45 MB）在首次使用時自動下載並快取到 `/var/lib/whisper` 資料卷。預先下載：
+ONNX 模型（共約 32 MB）在首次使用時自動下載並快取到 `/var/lib/whisper` 資料卷。預先下載：
 
 ```bash
 docker exec whisper whisper_manage --downloaddiarize
@@ -763,7 +763,7 @@ docker exec whisper whisper_manage --downloaddiarize
 
 與重複控制選項相同，`WHISPER_DIARIZE_THREADS` 的值可包含首尾 ASCII 空白，以及最多一對相符的外層引號。使用 `1` 至 `2147483647` 的 ASCII 十進位數字，不含正負號或前置零。非空無效值會在模型載入前阻止啟動，即使未啟用說話人分離也是如此。僅設定此選項不會啟用說話人分離。
 
-這不是整個行程的執行緒數上限。其他程式庫和請求工作執行緒可能使用額外執行緒，增加執行緒數不能保證加速或輸出完全一致。即使使用 `:cuda` 映像，說話人分離仍在 CPU 上執行，且僅支援批次處理。請依照[環境變數的重新啟動/重建說明](#環境變數)套用變更；更新或回復舊版時保留模型資料卷。
+這不是整個行程的執行緒數上限。其他程式庫和請求工作執行緒可能使用額外執行緒，增加執行緒數不能保證加速或輸出完全一致。使用 `:cuda` 映像且 `WHISPER_DEVICE=cuda` 時，分割和嵌入模型在 GPU 上執行，上述執行緒僅用於 CPU 端的處理。說話人分離僅支援批次處理。請依照[環境變數的重新啟動/重建說明](#環境變數)套用變更；更新或回復舊版時保留模型資料卷。
 
 ## 使用計數
 
