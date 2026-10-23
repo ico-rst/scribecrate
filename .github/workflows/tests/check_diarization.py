@@ -99,6 +99,11 @@ def check(args):
     api._load_decoding_options()
     api._load_model()
     import diarizer
+    # Diarization labels transcript segments; word timings locate speaker changes.
+    segments, _ = api._model.transcribe(str(args.audio), language="en", beam_size=5,
+                                        word_timestamps=True, vad_filter=True)
+    segments = list(segments)
+    assert segments, "ASR has no speech segments"
     results = {
         "platform": platform.platform(), "architecture": platform.machine(),
         "logical_cpus": os.cpu_count(), "limits": system_limits(),
@@ -111,27 +116,29 @@ def check(args):
         os.environ["WHISPER_DIARIZE_THREADS"] = override
         api._load_diarization_options()
         start = time.monotonic()
-        # The native pipeline does not expose its config after construction.
+        # The native extractor does not expose its config after construction.
         # Capture the argument while still invoking the real native constructor.
-        constructor = diarizer.sherpa_onnx.OfflineSpeakerDiarization
-        with mock.patch.object(diarizer.sherpa_onnx, "OfflineSpeakerDiarization", wraps=constructor) as native:
+        constructor = diarizer.sherpa_onnx.SpeakerEmbeddingExtractor
+        with mock.patch.object(diarizer.sherpa_onnx, "SpeakerEmbeddingExtractor", wraps=constructor) as native:
             api._load_diarizer()
-        assert api._diarization_enabled and diarizer.is_loaded(), "Native pipeline did not load"
+        assert api._diarization_enabled and diarizer.is_loaded(), "Native extractor did not load"
         initialization_seconds = time.monotonic() - start
         config = native.call_args.args[0]
-        assert config.segmentation.num_threads == api._diarize_threads
-        assert config.embedding.num_threads == api._diarize_threads
-        assert config.segmentation.provider == config.embedding.provider == "cpu"
-        assert diarizer.diarize(str(args.audio)), "Warm-up returned no native diarization turns"
+        assert config.num_threads == api._diarize_threads
+        assert config.provider == "cpu"
+        assert diarizer.diarize(str(args.audio), segments), "Warm-up returned no speaker labels"
         timings, cpu_seconds, all_turns = [], [], []
         for _ in range(args.runs):
             start = time.monotonic()
             usage = resource.getrusage(resource.RUSAGE_SELF)
-            turns = diarizer.diarize(str(args.audio))
+            labeled = diarizer.diarize(str(args.audio), segments)
             after = resource.getrusage(resource.RUSAGE_SELF)
             timings.append(time.monotonic() - start)
             cpu_seconds.append(after.ru_utime + after.ru_stime - usage.ru_utime - usage.ru_stime)
-            assert turns and all(end > begin >= 0 and speaker.startswith("SPEAKER_") for begin, end, speaker in turns)
+            turns = [(seg.start, seg.end, speaker) for seg, speaker in labeled]
+            assert turns and all(end >= begin >= 0 and speaker.startswith("SPEAKER_") for begin, end, speaker in turns)
+            # The public fixture has two speakers, and the configured count is two.
+            assert len({speaker for _, _, speaker in turns}) == 2, "Expected two speakers"
             all_turns.append(turns)
         output = asyncio.run(request(api, args.audio))
         results["settings"].append({
@@ -154,7 +161,7 @@ def check(args):
         barrier.wait()
         intervals["batch_start"] = time.monotonic()
         try:
-            return diarizer.diarize(str(args.audio))
+            return diarizer.diarize(str(args.audio), segments)
         finally:
             intervals["batch_end"] = time.monotonic()
     def sse():
@@ -170,12 +177,11 @@ def check(args):
         assert batch_result.result(timeout=300), "Overlapping batch produced no turns"
         assert stream_result.result(timeout=300)["text"].strip()
     results["overlapping_batch_sse"] = "passed"
-    assert max(intervals["batch_start"], intervals["sse_start"]) < min(intervals["batch_end"], intervals["sse_end"])
+    assert max(intervals["batch_start"], intervals["sse_start"]) < min(intervals["batch_end"], intervals["sse_end"]), \
+        "Batch diarization and SSE did not overlap"
     results["overlap_intervals"] = intervals
     results["model_sha256"] = {
-        name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for name in (diarizer._SEG_MODEL_REL, diarizer._EMB_MODEL_REL)
-        for path in (args.cache / name,)
+        diarizer._EMB_MODEL_REL: hashlib.sha256((args.cache / diarizer._EMB_MODEL_REL).read_bytes()).hexdigest()
     }
     results["whisper_snapshot_ids"] = sorted(path.name for path in args.cache.glob(
         "models--Systran--faster-whisper-tiny/snapshots/*") if path.is_dir())

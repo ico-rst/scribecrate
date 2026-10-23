@@ -36,7 +36,7 @@ Options:
   --getkey                             output the API key (machine-readable, no decoration)
   --listmodels                         list available Whisper model names and sizes
   --downloadmodel <model>              pre-download a model to the cache volume
-  --downloaddiarize                    pre-download diarization ONNX models
+  --downloaddiarize                    pre-download the diarization ONNX model
 
   -h, --help                           show this help message and exit
 
@@ -338,38 +338,27 @@ PYEOF
 
 do_download_diarize() {
   echo
-  echo "Downloading diarization ONNX models to /var/lib/whisper..."
-  echo "  - Segmentation model (~5 MB)"
-  echo "  - Speaker embedding model (~27 MB)"
+  echo "Downloading the diarization ONNX model to /var/lib/whisper..."
+  echo "  - Speaker embedding model (~40 MB)"
   echo
 
   local cache_dir="/var/lib/whisper"
-  local seg_dir="${cache_dir}/sherpa-onnx-pyannote-segmentation-3-0"
-  local seg_model="${seg_dir}/model.onnx"
-  local emb_model="${cache_dir}/wespeaker_en_voxceleb_resnet34_LM.onnx"
-
-  if [ ! -f "$seg_model" ]; then
-    echo "  Downloading segmentation model..."
-    curl -fSL --retry 3 --retry-delay 2 -o "${cache_dir}/seg.tar.bz2" \
-      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
-    tar xjf "${cache_dir}/seg.tar.bz2" -C "$cache_dir"
-    rm -f "${cache_dir}/seg.tar.bz2"
-    echo "  Segmentation model ready."
-  else
-    echo "  Segmentation model already exists."
-  fi
+  local emb_model="${cache_dir}/nemo_en_titanet_small.onnx"
 
   if [ ! -f "$emb_model" ]; then
     echo "  Downloading embedding model..."
-    curl -fSL --retry 3 --retry-delay 2 -o "$emb_model" \
-      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx"
+    # Download to a temporary name so an interrupted transfer is never used.
+    curl -fSL --retry 3 --retry-delay 2 -o "${emb_model}.part" \
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx" \
+      && mv -f "${emb_model}.part" "$emb_model" \
+      || { rm -f "${emb_model}.part"; exiterr "Embedding model download failed."; }
     echo "  Embedding model ready."
   else
     echo "  Embedding model already exists."
   fi
 
   echo
-  echo "Diarization models downloaded successfully."
+  echo "Diarization model downloaded successfully."
   echo "To enable diarization, set WHISPER_DIARIZATION=true in your env file."
   echo
 }

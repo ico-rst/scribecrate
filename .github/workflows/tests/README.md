@@ -43,16 +43,24 @@ these tests do not prove that any setting eliminates every hallucination.
 
 `test_diarization_threads.py` covers strict startup validation, inheritance,
 direct-Python legacy fallback, disabled-feature isolation, shell export/parsing
-parity, both native model arguments and the helper's one-thread compatibility
+parity, the native model arguments and the helper's one-thread compatibility
 default. Native constructors, NumPy and model downloads are stubbed only in the
 dependency-free unit suite. No extreme thread-count boundary is allocated.
+
+The same file checks chunking, clustering and segment splitting with a fake
+embedding model: alternating speakers, a speaker change inside one segment,
+ignored sub-0.5-second changes, a stray sound that must not claim a speaker
+(with and without a known count), threshold/count control and segments without
+words or audio. These speaker tests need NumPy and are skipped without it. The
+API tests check that diarization requests word timings, returns the split
+segments and omits unrequested words, and falls back to the plain transcript.
 
 `check_diarization.py` uses the real installed bindings and the public two-speaker
 fixture below. Supply `--api`, `--audio`, `--cache` and `--output` in disposable
 scratch space. It may download the Whisper and ONNX models. It checks
-both actual native config arguments, nonempty native diarization turns, speech
-segments/speaker labels, text/SRT/VTT output, and overlapping batch diarization
-with a separate SSE request. SSE must complete without speaker fields. It does
+the actual native config arguments, exactly two speakers on the two-speaker
+fixture, speech segments/speaker labels, text/SRT/VTT output, and overlapping
+batch diarization with a separate SSE request. SSE must complete without speaker fields. It does
 not change production scheduling or establish new concurrency guarantees.
 
 The helper compares explicit `1`, inherited `2`, and explicit `6`, with a warm-up
@@ -62,6 +70,12 @@ wall/aggregate CPU time, process-wide peak RSS, turns and clusters. Peak RSS is 
 cumulative process high-water mark, not an isolated allocation measurement for
 each setting. Compare medians/turns; do not require cross-machine byte identity or
 a fixed speedup. Resource settings can oversubscribe a constrained container.
+
+The clustering defaults (0.5-second chunk gaps, 1.5-second minimum chunks for
+speaker definition, 3 seconds of speech per speaker, threshold `0.45`) were
+chosen on two- to four-speaker English, German and Chinese recordings with the
+speaker embedding models available from sherpa-onnx. No evaluation audio is
+committed here.
 
 The CPU workflow covers amd64 and arm64 diarization; the CUDA workflow exercises
 the CUDA image's CPU-based diarization on a non-GPU runner. Both run the helper
@@ -81,5 +95,5 @@ inherits the file's `WHISPER_THREADS=2`. The CUDA startup checks explicit `1`.
 - License: [MIT, Copyright (c) Microsoft Corporation](https://github.com/Azure-Samples/cognitive-services-speech-sdk/blob/5886c5b7c528bf036508abfd8b4d449ddab0164a/LICENSE.md).
 - Public two-speaker speech, 29.4875 seconds, mono 16 kHz. No private reporter audio
   or audio binary is committed. Preserve the upstream license/attribution on
-  redistribution. Clustering need not be perfect for the test to pass, but native
-  turns and actual ASR speech segments must be nonempty.
+  redistribution. The check requires exactly two speaker labels and nonempty ASR
+  speech segments; it does not require every segment label to be correct.

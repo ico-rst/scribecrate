@@ -200,10 +200,10 @@ CPU 镜像支持 `linux/amd64` 和 `linux/arm64`。`:cuda` 标签仅支持 `linu
 | `WHISPER_MAX_UPLOAD_MB` | 上传音频文件的最大大小（MB）。超过此限制的请求会返回 HTTP 413。设为 `0` 可禁用此限制。 | `1024` |
 | `WHISPER_LOCAL_ONLY` | 设为任意非空值（如 `true`）时，禁止所有 HuggingFace 模型下载。适用于预先缓存模型的离线或隔离网络部署。 | *（未设置）* |
 | `WHISPER_WORD_TIMESTAMPS` | 设为 `true` 时，全局启用词级时间戳。`verbose_json` 输出将包含顶层 `words` 数组，含每个词的起止时间和置信度。也可通过 `timestamp_granularities[]=word` 按请求启用。 | *（未设置）* |
-| `WHISPER_DIARIZATION` | 设为 `true` 启用说话人分离，识别每个片段中的说话人。使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)、pyannote segmentation-3.0 和多语言 VoxCeleb 说话人嵌入模型（ONNX 模型共约 32 MB，首次使用时自动下载）。在 `:cuda` 镜像中，当 `WHISPER_DEVICE` 为 `cuda` 时在 GPU 上运行。不支持流式模式。 | *（未设置）* |
-| `WHISPER_DIARIZE_NUM_SPEAKERS` | 说话人确切数量（如已知）。提高聚类准确性。设为 `-1` 或留空表示自动检测。 | `-1` |
-| `WHISPER_DIARIZE_THREADS` | 分割和嵌入模型各自使用的 CPU 线程数。接受 `1` 至 `2147483647` 的规范十进制整数；未设置或为空时继承 `WHISPER_THREADS`。 | `WHISPER_THREADS` |
-| `WHISPER_DIARIZE_THRESHOLD` | 自动检测时使用的聚类阈值。值越小检测到的说话人越多，值越大检测到的越少。设置确切说话人数量时会忽略此项。 | `0.5` |
+| `WHISPER_DIARIZATION` | 设为 `true` 启用说话人分离，识别每个片段中的说话人。使用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 和 NVIDIA NeMo TitaNet-small 说话人嵌入模型（ONNX 模型约 40 MB，首次使用时自动下载）。在 `:cuda` 镜像中，当 `WHISPER_DEVICE` 为 `cuda` 时在 GPU 上运行。不支持流式模式。 | *（未设置）* |
+| `WHISPER_DIARIZE_NUM_SPEAKERS` | 说话人确切数量（如已知），例如电话通话为 `2`。提高聚类准确性。设为 `-1` 或留空表示自动检测。 | `-1` |
+| `WHISPER_DIARIZE_THREADS` | 说话人嵌入模型使用的 CPU 线程数。接受 `1` 至 `2147483647` 的规范十进制整数；未设置或为空时继承 `WHISPER_THREADS`。 | `WHISPER_THREADS` |
+| `WHISPER_DIARIZE_THRESHOLD` | 自动检测时使用的聚类阈值。值越小检测到的说话人越多，值越大检测到的越少。设置确切说话人数量时会忽略此项。 | `0.45` |
 | `WHISPER_DISABLE_USAGE_COUNTS` | 设为 `1` 可禁用匿名聚合使用计数。 | *（未设置）* |
 
 **注：** 在 `env` 文件中，值可用单引号括起，例如 `VAR='value'`。`=` 两侧不要有空格。如更改 `WHISPER_PORT`，请相应更新 `docker run` 命令中的 `-p` 参数。
@@ -713,7 +713,9 @@ ScribeCrate 可作为更广泛的自托管 AI 设置中的语音转文字服务�
 
 ## 说话人分离
 
-说话人分离功能识别每个转录片段中*谁在说话*。这是一个本地扩展，基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 使用导出为 ONNX 格式的 pyannote segmentation-3.0 模型和 WeSpeaker ResNet34-LM 说话人嵌入模型（基于多语言 VoxCeleb 数据集训练）。
+说话人分离功能识别每个转录片段中*谁在说话*。这是一个本地扩展，基于 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 使用 ONNX 格式的 NVIDIA NeMo TitaNet-small 说话人嵌入模型。
+
+转录完成后，每个片段会在词间停顿和句末处切分为语音块。每个语音块计算声纹嵌入，再聚类为说话人。说话人在片段中发生变化时，该片段会按说话人拆分为多个片段。
 
 **启用说话人分离：**
 
@@ -722,7 +724,7 @@ ScribeCrate 可作为更广泛的自托管 AI 设置中的语音转文字服务�
 WHISPER_DIARIZATION=true
 ```
 
-ONNX 模型（共约 32 MB）在首次使用时自动下载并缓存到 `/var/lib/whisper` 数据卷。预先下载：
+ONNX 模型（约 40 MB）在首次使用时自动下载并缓存到 `/var/lib/whisper` 数据卷。预先下载：
 
 ```bash
 docker exec whisper whisper_manage --downloaddiarize
@@ -768,11 +770,11 @@ docker exec whisper whisper_manage --downloaddiarize
 - 如果已知确切说话人数量，设置 `WHISPER_DIARIZE_NUM_SPEAKERS` 可提高准确性。
 - 说话人分离在转录完成后运行。处理时间取决于音频时长、硬件和线程设置，可能超过转录时间。
 
-**说话人分离线程：** 分割和嵌入模型现在都继承 `WHISPER_THREADS`（通常为 `2`），不再各自使用一个线程。这会改变现有已启用说话人分离的部署的 CPU 资源使用情况。设置 `WHISPER_DIARIZE_THREADS=1` 可保留之前的每模型线程设置，也可根据 CPU 资源预算选择其他线程数。移除该选项或将其留空会恢复继承行为，而不是之前的单线程默认值。
+**说话人分离线程：** 说话人嵌入模型继承 `WHISPER_THREADS`（通常为 `2`），不再使用单个线程。这会改变现有已启用说话人分离的部署的 CPU 资源使用情况。设置 `WHISPER_DIARIZE_THREADS=1` 可保留之前的每模型线程设置，也可根据 CPU 资源预算选择其他线程数。移除该选项或将其留空会恢复继承行为，而不是之前的单线程默认值。
 
 与重复控制选项相同，`WHISPER_DIARIZE_THREADS` 的值可包含首尾 ASCII 空白，以及最多一对匹配的外层引号。使用 `1` 至 `2147483647` 的 ASCII 十进制数字，不含正负号或前导零。非空无效值会在模型加载前阻止启动，即使未启用说话人分离也是如此。仅设置此选项不会启用说话人分离。
 
-这不是整个进程的线程数上限。其他库和请求工作线程可能使用额外线程，增加线程数不能保证加速或输出完全一致。使用 `:cuda` 镜像且 `WHISPER_DEVICE=cuda` 时，分割和嵌入模型在 GPU 上运行，上述线程仅用于 CPU 端的处理。说话人分离仅支持批处理。请按照[环境变量的重启/重建说明](#环境变量)应用更改；更新或回滚时保留模型数据卷。
+这不是整个进程的线程数上限。其他库和请求工作线程可能使用额外线程，增加线程数不能保证加速或输出完全一致。使用 `:cuda` 镜像且 `WHISPER_DEVICE=cuda` 时，说话人嵌入模型在 GPU 上运行，上述线程仅用于 CPU 端的处理。说话人分离仅支持批处理。请按照[环境变量的重启/重建说明](#环境变量)应用更改；更新或回滚时保留模型数据卷。
 
 ## 使用计数
 

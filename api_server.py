@@ -106,7 +106,7 @@ def _load_diarizer() -> None:
         import diarizer
         cache_dir = os.environ.get("HF_HOME", "/var/lib/whisper")
         num_speakers = _env_int("WHISPER_DIARIZE_NUM_SPEAKERS", -1)
-        threshold = _env_float("WHISPER_DIARIZE_THRESHOLD", 0.5)
+        threshold = _env_float("WHISPER_DIARIZE_THRESHOLD", 0.45)
         # Diarize on the same device as Whisper. run.sh resolves
         # WHISPER_DEVICE=auto to cpu or cuda before the server starts.
         device = os.environ.get("WHISPER_DEVICE", "cpu").strip().lower()
@@ -691,7 +691,9 @@ async def _handle_audio(
                     beam_size=request_beam,
                     condition_on_previous_text=_condition_on_previous_text,
                     no_repeat_ngram_size=_no_repeat_ngram_size,
-                    word_timestamps=wt_flag,
+                    # Diarization uses word timings to find speaker changes;
+                    # words are only returned when requested (wt_flag).
+                    word_timestamps=wt_flag or _diarization_enabled,
                     vad_filter=True,
                 )
                 segments = list(segments_gen)  # consume the generator before the temp file is removed
@@ -709,14 +711,10 @@ async def _handle_audio(
         if _diarization_enabled:
             try:
                 import diarizer
-                turns = diarizer.diarize(tmp_path)
-                # Build lightweight segment dicts for alignment
-                seg_dicts = [
-                    {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
-                    for seg in segments
-                ]
-                diarizer.assign_speakers(seg_dicts, turns)
-                speaker_map = {i: d["speaker"] for i, d in enumerate(seg_dicts)}
+                # Segments are split where the speaker changes mid-segment.
+                labeled = diarizer.diarize(tmp_path, segments)
+                segments = [seg for seg, _ in labeled]
+                speaker_map = {i: speaker for i, (_, speaker) in enumerate(labeled)}
             except Exception as exc:
                 logger.warning("Diarization failed (returning without speakers): %s", exc)
 

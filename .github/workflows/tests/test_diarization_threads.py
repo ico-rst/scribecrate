@@ -1,5 +1,6 @@
-"""Diarization configuration regressions without NumPy, ONNX or downloads."""
+"""Diarization regressions without ONNX or downloads; speaker tests need NumPy."""
 import asyncio
+import dataclasses
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +12,11 @@ import unittest
 from unittest import mock
 
 from test_api_validation import api_server
+
+try:
+    import numpy
+except ImportError:  # the speaker tests are skipped without NumPy
+    numpy = None
 
 
 OPTION = "WHISPER_DIARIZE_THREADS"
@@ -169,35 +175,31 @@ class DiarizationOptionTests(unittest.TestCase):
 class DiarizerConstructionTests(unittest.TestCase):
     def setUp(self):
         self.native = types.ModuleType("sherpa_onnx")
-        for name in ("OfflineSpeakerSegmentationModelConfig",
-                     "OfflineSpeakerSegmentationPyannoteModelConfig",
-                     "SpeakerEmbeddingExtractorConfig", "FastClusteringConfig"):
-            setattr(self.native, name, mock.Mock(side_effect=lambda **kwargs: types.SimpleNamespace(**kwargs)))
-        self.config = types.SimpleNamespace(validate=mock.Mock(return_value=True))
-        self.native.OfflineSpeakerDiarizationConfig = mock.Mock(return_value=self.config)
-        self.native.OfflineSpeakerDiarization = mock.Mock(return_value=types.SimpleNamespace(sample_rate=16000))
+        self.valid = True
+        self.native.SpeakerEmbeddingExtractorConfig = mock.Mock(
+            side_effect=lambda **kwargs: types.SimpleNamespace(validate=lambda: self.valid, **kwargs))
+        self.native.SpeakerEmbeddingExtractor = mock.Mock(return_value=types.SimpleNamespace(dim=192))
         spec = importlib.util.spec_from_file_location("diarizer_thread_fixture", ROOT / "diarizer.py")
         self.diarizer = importlib.util.module_from_spec(spec)
         with mock.patch.dict(sys.modules, {"numpy": types.ModuleType("numpy"), "sherpa_onnx": self.native}):
             spec.loader.exec_module(self.diarizer)
-        self.model_patch = mock.patch.object(self.diarizer, "_ensure_models", return_value=("seg.onnx", "emb.onnx"))
+        self.model_patch = mock.patch.object(self.diarizer, "_ensure_model", return_value="emb.onnx")
         self.models = self.model_patch.start()
         self.addCleanup(self.model_patch.stop)
 
-    def test_both_models_receive_threads_and_legacy_positionals_work(self):
+    def test_model_receives_threads_and_legacy_positionals_work(self):
         for threads in (1, 2, 6, 2147483647):
             self.diarizer.load("/cache", 2, 0.7, num_threads=threads)
-            self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["num_threads"], threads)
-            self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["provider"], "cpu")
             self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=threads,
                                                                           provider="cpu")
-            self.native.FastClusteringConfig.assert_called_with(num_clusters=2, threshold=0.7)
-            args = self.native.OfflineSpeakerDiarizationConfig.call_args.kwargs
-            self.assertEqual((args["min_duration_on"], args["min_duration_off"]), (0.3, 0.5))
+            self.assertEqual((self.diarizer._num_speakers, self.diarizer._threshold), (2, 0.7))
             self.assertTrue(self.diarizer.is_loaded())
         self.diarizer.load("/cache", -1, 0.5)
-        self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["num_threads"], 1)
-        self.native.FastClusteringConfig.assert_called_with(num_clusters=-1, threshold=0.5)
+        self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=1,
+                                                                      provider="cpu")
+        self.assertEqual((self.diarizer._num_speakers, self.diarizer._threshold), (-1, 0.5))
+        self.diarizer.load("/cache", 0)
+        self.assertEqual((self.diarizer._num_speakers, self.diarizer._threshold), (-1, 0.45))
 
     def test_direct_invalid_values_fail_before_download_or_native_setup(self):
         for value in (0, -1, 2147483648, 10**100, True, False, 1.0, "6", None):
@@ -205,11 +207,10 @@ class DiarizerConstructionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "num_threads"):
                     self.diarizer.load(num_threads=value)
         self.models.assert_not_called()
-        self.native.OfflineSpeakerDiarizationConfig.assert_not_called()
+        self.native.SpeakerEmbeddingExtractorConfig.assert_not_called()
 
-    def test_both_models_receive_provider(self):
+    def test_model_receives_provider(self):
         self.diarizer.load("/cache", 2, 0.7, 2, "cuda")
-        self.assertEqual(self.native.OfflineSpeakerSegmentationModelConfig.call_args.kwargs["provider"], "cuda")
         self.native.SpeakerEmbeddingExtractorConfig.assert_called_with(model="emb.onnx", num_threads=2,
                                                                       provider="cuda")
         for value in ("gpu", "CUDA", "", None, "tensorrt"):
@@ -218,35 +219,225 @@ class DiarizerConstructionTests(unittest.TestCase):
                     self.diarizer.load(num_threads=2, provider=value)
         self.models.assert_called_once()
 
-    def test_invalid_native_config_does_not_initialize_pipeline(self):
-        self.config.validate.return_value = False
+    def test_invalid_native_config_does_not_initialize_extractor(self):
+        self.valid = False
         with self.assertRaisesRegex(RuntimeError, "config validation failed"):
             self.diarizer.load(num_threads=2)
-        self.native.OfflineSpeakerDiarization.assert_not_called()
+        self.native.SpeakerEmbeddingExtractor.assert_not_called()
 
     def test_cache_reuse_does_not_download(self):
-        # Exercise the real resolver against already cached files.
+        # Exercise the real resolver against an already cached file.
         self.model_patch.stop()
         with tempfile.TemporaryDirectory() as directory:
-            for name in (self.diarizer._SEG_MODEL_REL, self.diarizer._EMB_MODEL_REL):
-                path = Path(directory) / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.touch()
+            (Path(directory) / self.diarizer._EMB_MODEL_REL).touch()
             with mock.patch.object(self.diarizer, "_download_file") as download:
                 self.diarizer.load(directory, num_threads=6)
             download.assert_not_called()
 
-    def test_turns_and_speaker_assignment_are_unchanged(self):
-        turns = [types.SimpleNamespace(start=0.0, end=1.0, speaker=0),
-                 types.SimpleNamespace(start=1.0, end=2.0, speaker=1)]
-        result = types.SimpleNamespace(sort_by_start_time=lambda: turns)
-        self.diarizer._sd = types.SimpleNamespace(sample_rate=16000, process=lambda _: result)
-        with mock.patch.object(self.diarizer, "_load_audio", return_value=object()):
-            actual = self.diarizer.diarize("fixture.wav")
-        self.assertEqual(actual, [(0.0, 1.0, "SPEAKER_00"), (1.0, 2.0, "SPEAKER_01")])
-        segments = [{"start": 0.2, "end": 0.8}, {"start": 1.2, "end": 1.8}]
-        self.diarizer.assign_speakers(segments, actual)
-        self.assertEqual([s["speaker"] for s in segments], ["SPEAKER_00", "SPEAKER_01"])
+    def test_interrupted_download_leaves_no_model_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / "model.onnx"
+            def failing_curl(args, check):
+                Path(args[args.index("-o") + 1]).write_bytes(b"trunc")
+                raise subprocess.CalledProcessError(18, args)
+            with mock.patch.object(self.diarizer.subprocess, "run", side_effect=failing_curl):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.diarizer._download_file("https://example.invalid/model.onnx", str(dest))
+            self.assertFalse(dest.exists())
+            def curl(args, check):
+                Path(args[args.index("-o") + 1]).write_bytes(b"model")
+            with mock.patch.object(self.diarizer.subprocess, "run", side_effect=curl):
+                self.diarizer._download_file("https://example.invalid/model.onnx", str(dest))
+            self.assertEqual(dest.read_bytes(), b"model")
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["model.onnx"])
+
+
+@dataclasses.dataclass
+class _Word:
+    start: float
+    end: float
+    word: str
+    probability: float = 1.0
+
+
+@dataclasses.dataclass
+class _Segment:
+    start: float
+    end: float
+    text: str
+    words: list
+    tokens: list = dataclasses.field(default_factory=lambda: [50364])
+
+
+# Each fake voice fills its audio with a distinct sample value; the fake model
+# maps that value to a fixed embedding direction.
+_VOICES = {1: [1.0, 0.0, 0.0, 0.0], 2: [0.0, 1.0, 0.0, 0.0], 3: [0.0, 0.0, 1.0, 0.0],
+           4: [-0.4, -0.6, 0.0, 1.0]}  # voice 4: a stray sound unlike both, nearest to voice 1
+
+
+class _FakeStream:
+    def accept_waveform(self, sample_rate, samples):
+        self.samples = samples
+
+    def input_finished(self):
+        pass
+
+
+class _FakeExtractor:
+    def create_stream(self):
+        return _FakeStream()
+
+    def is_ready(self, stream):
+        return len(stream.samples) >= 800
+
+    def compute(self, stream):
+        voiced = stream.samples[stream.samples > 0]
+        return _VOICES[int(round(float(voiced.mean()) * 10))]
+
+
+@unittest.skipIf(numpy is None, "NumPy is not installed")
+class DiarizerSpeakerTests(unittest.TestCase):
+    """Chunking, clustering and segment splitting with a fake embedding model."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("diarizer_speaker_fixture", ROOT / "diarizer.py")
+        self.diarizer = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"sherpa_onnx": types.ModuleType("sherpa_onnx")}):
+            spec.loader.exec_module(self.diarizer)
+        self.diarizer._extractor = _FakeExtractor()
+        self.diarizer._num_speakers = -1
+        self.diarizer._threshold = 0.45
+
+    def run_diarizer(self, segments, voiced):
+        """voiced: (start, end, voice) spans written into a silent 16 kHz recording."""
+        audio = numpy.zeros(int((max(e for _, e, _ in voiced) + 1) * 16000), dtype=numpy.float32)
+        for start, end, voice in voiced:
+            audio[int(start * 16000):int(end * 16000)] = voice / 10
+        with mock.patch.object(self.diarizer, "_load_audio", return_value=audio):
+            return self.diarizer.diarize("fixture.wav", segments)
+
+    @staticmethod
+    def segment(*words):
+        """words: (start, end, text) tuples; returns a segment spanning them."""
+        items = [_Word(s, e, " " + t) for s, e, t in words]
+        return _Segment(items[0].start, items[-1].end, "".join(w.word for w in items), items)
+
+    def test_alternating_speakers_are_labeled_in_order_of_appearance(self):
+        turns = [(0.0, 3.0, 2), (3.5, 6.5, 1), (7.0, 10.0, 2), (10.5, 13.5, 1)]
+        segments = [self.segment((s, e, "Hallo zusammen.")) for s, e, _ in turns]
+        for speakers in (-1, 2):
+            with self.subTest(num_speakers=speakers):
+                self.diarizer._num_speakers = speakers
+                result = self.run_diarizer(segments, turns)
+                self.assertEqual([s for _, s in result], ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00", "SPEAKER_01"])
+                self.assertEqual([seg for seg, _ in result], segments)
+
+    def test_segment_is_split_where_the_speaker_changes(self):
+        segment = self.segment((0.0, 1.0, "Good"), (1.0, 2.5, "morning."), (3.0, 4.0, "Good"), (4.0, 6.0, "morning."))
+        voiced = [(0.0, 2.5, 1), (3.0, 6.0, 2), (7.0, 10.0, 1)]
+        later = self.segment((7.0, 10.0, "Thanks."))
+        result = self.run_diarizer([segment, later], voiced)
+        self.assertEqual([s for _, s in result], ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"])
+        first, second, third = (part for part, _ in result)
+        self.assertEqual((first.start, first.end, first.text), (0.0, 2.5, " Good morning."))
+        self.assertEqual((second.start, second.end, second.text), (3.0, 6.0, " Good morning."))
+        self.assertEqual((first.tokens, second.tokens), ([], []))
+        self.assertEqual([w.word for w in second.words], [" Good", " morning."])
+        self.assertIs(third, later)
+
+    def test_brief_change_inside_a_segment_is_ignored(self):
+        segment = self.segment((0.0, 3.0, "Ich"), (3.6, 3.8, "ja"), (4.4, 7.0, "denke."))
+        voiced = [(0.0, 3.0, 1), (3.6, 3.8, 2), (4.4, 7.0, 1), (8.0, 11.0, 2)]
+        result = self.run_diarizer([segment, self.segment((8.0, 11.0, "Genau."))], voiced)
+        self.assertEqual([(seg.text, s) for seg, s in result],
+                         [(segment.text, "SPEAKER_00"), (" Genau.", "SPEAKER_01")])
+
+    def test_speaker_numbers_have_no_gaps_after_smoothing(self):
+        # Voice 3 appears first, but only as a brief change that is smoothed away.
+        segment = self.segment((0.0, 3.0, "Ich"), (3.6, 3.8, "ja"), (4.4, 7.0, "denke."))
+        voiced = [(0.0, 3.0, 1), (3.6, 3.8, 3), (4.4, 7.0, 1), (8.0, 11.0, 2), (12.0, 15.0, 3)]
+        segments = [segment, self.segment((8.0, 11.0, "Genau.")), self.segment((12.0, 15.0, "Gut."))]
+        self.diarizer._num_speakers = 3
+        labels = [s for _, s in self.run_diarizer(segments, voiced)]
+        self.assertEqual(labels, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"])
+
+    def test_stray_sound_cannot_take_a_speaker_slot(self):
+        turns = [(0.0, 4.0, 1), (4.5, 8.5, 2), (9.0, 10.6, 4), (11.0, 15.0, 1), (15.5, 19.5, 2)]
+        segments = [self.segment((s, e, "Text.")) for s, e, _ in turns]
+        for speakers in (-1, 2):
+            with self.subTest(num_speakers=speakers):
+                self.diarizer._num_speakers = speakers
+                labels = [s for _, s in self.run_diarizer(segments, turns)]
+                self.assertEqual(labels, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00", "SPEAKER_00", "SPEAKER_01"])
+
+    def test_threshold_and_speaker_count_control_the_number_of_speakers(self):
+        turns = [(0.0, 4.0, 1), (4.5, 8.5, 2), (9.0, 13.0, 3)]
+        segments = [self.segment((s, e, "Text.")) for s, e, _ in turns]
+        cases = [(-1, 0.45, 3), (-1, 2.0, 1), (3, 2.0, 3), (2, 0.45, 2), (1, 0.45, 1)]
+        for speakers, threshold, expected in cases:
+            with self.subTest(num_speakers=speakers, threshold=threshold):
+                self.diarizer._num_speakers, self.diarizer._threshold = speakers, threshold
+                labels = {s for _, s in self.run_diarizer(segments, turns)}
+                self.assertEqual(len(labels), expected)
+
+    def test_segments_without_words_or_audio_are_labeled(self):
+        no_words = _Segment(0.0, 3.0, " Hallo.", None)
+        too_short = self.segment((3.2, 3.21, "Ja."))
+        voiced = [(0.0, 3.0, 1), (4.0, 7.0, 2)]
+        result = self.run_diarizer([no_words, too_short, self.segment((4.0, 7.0, "Okay."))], voiced)
+        self.assertEqual([s for _, s in result], ["SPEAKER_00", "SPEAKER_00", "SPEAKER_01"])
+        self.assertEqual(self.diarizer.diarize("unused.wav", []), [])
+
+
+class DiarizedResponseTests(unittest.TestCase):
+    """The batch API asks for word timings and outputs the diarizer's segments."""
+
+    def setUp(self):
+        from test_api_validation import _FakeInfo, _FakeUpload
+        self.upload, self.info = _FakeUpload, _FakeInfo
+        fields = dict(seek=0, tokens=[1], temperature=0.0, avg_logprob=-0.1, compression_ratio=1.0,
+                      no_speech_prob=0.0)
+        whole = types.SimpleNamespace(start=0.0, end=4.0, text=" Hallo. Guten Tag.", words=["w"], **fields)
+        self.parts = [types.SimpleNamespace(start=0.0, end=1.5, text=" Hallo.", words=["w"], **fields),
+                      types.SimpleNamespace(start=2.0, end=4.0, text=" Guten Tag.", words=["w"], **fields)]
+        self.model = mock.Mock()
+        self.model.transcribe.side_effect = lambda *a, **k: (iter([whole]), self.info())
+        self.fake = types.ModuleType("diarizer")
+        self.fake.diarize = mock.Mock(return_value=[(self.parts[0], "SPEAKER_00"), (self.parts[1], "SPEAKER_01")])
+        for name, value in (("_model", self.model), ("_model_name", "base"), ("_diarization_enabled", True),
+                            ("_max_upload_bytes", 0), ("_word_timestamps", False)):
+            patch = mock.patch.object(api_server, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        patch = mock.patch.dict(sys.modules, {"diarizer": self.fake})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def request(self, response_format):
+        return asyncio.run(api_server._handle_audio(
+            task="transcribe", file=self.upload(), model="whisper-1", language=None, prompt=None,
+            response_format=response_format, temperature=0, stream=None, beam=None,
+        ))
+
+    def test_verbose_json_uses_split_segments_without_unrequested_words(self):
+        body = self.request("verbose_json").content
+        self.assertTrue(self.model.transcribe.call_args.kwargs["word_timestamps"])
+        self.assertEqual([(s["id"], s["text"], s["speaker"]) for s in body["segments"]],
+                         [(0, "Hallo.", "SPEAKER_00"), (1, "Guten Tag.", "SPEAKER_01")])
+        self.assertNotIn("words", body)
+        self.assertEqual(body["text"], "Hallo. Guten Tag.")
+
+    def test_text_and_subtitles_label_each_speaker(self):
+        self.assertEqual(self.request("text").content, "[SPEAKER_00] Hallo.\n[SPEAKER_01] Guten Tag.")
+        self.assertIn("[SPEAKER_01] Guten Tag.", self.request("srt").content)
+        self.assertIn("[SPEAKER_01] Guten Tag.", self.request("vtt").content)
+
+    def test_failed_diarization_returns_the_transcript_unchanged(self):
+        self.fake.diarize.side_effect = RuntimeError("fixture failure")
+        with self.assertLogs(api_server.logger, level="WARNING"):
+            body = self.request("verbose_json").content
+        self.assertEqual([s["text"] for s in body["segments"]], ["Hallo. Guten Tag."])
+        self.assertNotIn("speaker", body["segments"][0])
 
 
 class ShellDiarizationOptionTests(unittest.TestCase):
