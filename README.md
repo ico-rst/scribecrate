@@ -258,12 +258,18 @@ docker compose up -d
 docker logs whisper
 ```
 
+The included Compose files build the image from the local Dockerfiles instead of pulling it from Docker Hub. With `pull_policy: build`, every `docker compose up -d` rebuilds the image (using the layer cache), so code changes are picked up.
+
 Example `docker-compose.yml` (already included):
 
 ```yaml
 services:
   whisper:
-    image: hwdsl2/whisper-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scribecrate
+    pull_policy: build
     container_name: whisper
     restart: always
     ports:
@@ -297,7 +303,12 @@ Example `docker-compose.cuda.yml` (already included):
 ```yaml
 services:
   whisper:
-    image: hwdsl2/whisper-server:cuda
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: scribecrate:cuda
+    pull_policy: build
+    platform: linux/amd64
     container_name: whisper
     restart: always
     ports:

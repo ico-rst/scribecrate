@@ -1,6 +1,10 @@
 services:
   whisper:
-    image: hwdsl2/whisper-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scribecrate
+    pull_policy: build
     container_name: whisper
     restart: always
     ports:

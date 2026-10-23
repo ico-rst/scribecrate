@@ -1,6 +1,11 @@
 services:
   whisper:
-    image: hwdsl2/whisper-server:cuda
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: scribecrate:cuda
+    pull_policy: build
+    platform: linux/amd64
     container_name: whisper
     restart: always
     ports:

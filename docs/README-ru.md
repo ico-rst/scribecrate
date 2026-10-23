@@ -263,7 +263,11 @@ docker logs whisper
 ```yaml
 services:
   whisper:
-    image: hwdsl2/whisper-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scribecrate
+    pull_policy: build
     container_name: whisper
     restart: always
     ports:
@@ -297,7 +301,12 @@ docker logs whisper
 ```yaml
 services:
   whisper:
-    image: hwdsl2/whisper-server:cuda
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: scribecrate:cuda
+    pull_policy: build
+    platform: linux/amd64
     container_name: whisper
     restart: always
     ports:
